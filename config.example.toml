@@ -1,0 +1,40 @@
+# Copy to config.toml and adjust. Credentials are NOT stored here; set
+# RH_USERNAME, RH_PASSWORD and (optionally) RH_TOTP_SECRET in the environment.
+
+symbols = ["SPY", "QQQ"]
+trade_log = "state/trades.jsonl"
+
+[strategy]
+# Long while the fast SMA is above the slow SMA; flat otherwise.
+fast = 50
+slow = 200
+
+[portfolio]
+# Per-symbol allocation while its signal is on. Omit for an equal split.
+# max_position_pct = 0.25
+cash_buffer_pct = 0.02
+# Fractional shares require market orders on Robinhood. Whole shares let
+# the bot use protective limit orders.
+fractional = false
+
+[execution]
+slippage_bps = 5       # backtest/paper cost model
+commission = 0.0
+limit_buffer_bps = 20  # limit price = last price +/- 0.20%
+
+[risk]
+max_order_notional = 5000
+max_orders_per_run = 10
+max_data_age_days = 5
+kill_switch_file = "KILL"  # `touch KILL` to stop all new orders
+
+[broker]
+mode = "paper"  # "paper" or "live"
+paper_state = "state/paper.json"
+paper_starting_cash = 10000
+
+[data]
+# "csv" reads data/<SYMBOL>.csv; "robinhood" fetches fresh daily bars
+# (needs credentials). Use "robinhood" for real paper trading.
+source = "csv"
+csv_dir = "data"

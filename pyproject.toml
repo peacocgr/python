@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rhtrader"
+version = "0.1.0"
+description = "SMA-crossover trading bot for Robinhood stocks & ETFs, with backtesting and paper trading"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.0", "numpy>=1.24"]
+
+[project.optional-dependencies]
+live = ["robin_stocks>=3.0", "pyotp>=2.8"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+rhtrader = "rhtrader.cli:main"
+
+[tool.setuptools]
+packages = ["rhtrader"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

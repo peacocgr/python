@@ -63,6 +63,33 @@ def _bars_to_frame(bars: list[dict]) -> pd.DataFrame:
     return df[COLUMNS].astype(float).sort_index()
 
 
+def append_official_closes(client, bars: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Add the latest session's official close when the bar history lags it.
+
+    Right after the close, Robinhood's daily history can still show today as
+    an interpolated placeholder (dropped above), while the quote already has
+    the settled close. Only the close is known, so O/H/L are set to it; this
+    is meant for computing signals, not for saving as history.
+    """
+    data = client.call("get_equity_quotes", {"symbols": list(bars)})
+    out = dict(bars)
+    for r in data.get("results", []):
+        close = r.get("close") or {}
+        sym = close.get("symbol")
+        if sym not in out or close.get("interpolated") or not close.get("price"):
+            continue
+        day = pd.Timestamp(close["date"])
+        df = out[sym]
+        if day > df.index[-1]:
+            px = float(close["price"])
+            row = pd.DataFrame(
+                {"open": px, "high": px, "low": px, "close": px, "volume": 0.0},
+                index=pd.DatetimeIndex([day], name=df.index.name),
+            )
+            out[sym] = pd.concat([df, row])
+    return out
+
+
 def drop_incomplete_bar(df: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
     """Drop today's bar if the regular session hasn't closed yet.
 

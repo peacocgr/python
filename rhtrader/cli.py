@@ -25,7 +25,7 @@ import pandas as pd
 from .backtest import run_backtest
 from .broker import PaperBroker, RobinhoodBroker
 from .config import Config, load_config
-from .data import fetch_robinhood, load_csv
+from .data import append_official_closes, fetch_robinhood, load_csv
 from .risk import kill_switch_engaged
 from .trader import run_cycle
 
@@ -134,6 +134,8 @@ def cmd_trade(cfg: Config, args: argparse.Namespace) -> int:
     needs_robinhood = live or cfg.data.source == "robinhood"
     with _connect(cfg) if needs_robinhood else nullcontext() as rh:
         bars = _load_bars(cfg, rh)
+        if rh is not None and cfg.data.source == "robinhood":
+            bars = append_official_closes(rh, bars)
         if live:
             broker = RobinhoodBroker(rh, cfg.robinhood.account_number, cfg.robinhood.review_orders)
         else:

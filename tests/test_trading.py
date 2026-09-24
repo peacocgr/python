@@ -3,11 +3,12 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from rhtrader.broker import Account, Order, PaperBroker, RobinhoodBroker
 from rhtrader.config import load_config
-from rhtrader.data import NEW_YORK, drop_incomplete_bar, fetch_robinhood
+from rhtrader.data import NEW_YORK, append_official_closes, drop_incomplete_bar, fetch_robinhood
 from rhtrader.risk import check_orders
 from rhtrader.trader import latest_signals, plan_orders, run_cycle
 
@@ -205,6 +206,21 @@ def test_fetch_robinhood_parses_bars_and_drops_interpolated():
     ]})
     df = fetch_robinhood(fake, ["AAA"], datetime(2026, 1, 1, tzinfo=NEW_YORK))["AAA"]
     assert list(df["close"]) == [1.0, 2.0]
+
+
+def test_official_close_fills_the_interpolated_last_day():
+    bars = {"AAA": make_bars([10, 11, 12])}  # ends 2024-01-03
+    quotes = {"results": [
+        {"quote": {"symbol": "AAA"}, "close": {"symbol": "AAA", "date": "2024-01-04", "price": "13.5",
+                                                 "interpolated": False}},
+    ]}
+    fake = SimpleNamespace(call=lambda tool, args: quotes)
+    out = append_official_closes(fake, bars)["AAA"]
+    assert out.index[-1] == pd.Timestamp("2024-01-04") and out["close"].iloc[-1] == 13.5
+    # Already up to date or interpolated close: unchanged.
+    assert len(append_official_closes(fake, {"AAA": out})["AAA"]) == 4
+    quotes["results"][0]["close"].update(date="2024-01-05", interpolated=True)
+    assert len(append_official_closes(fake, {"AAA": out})["AAA"]) == 4
 
 
 # --- config -----------------------------------------------------------------

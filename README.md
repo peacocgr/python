@@ -129,6 +129,16 @@ guard against bad or mistyped data, no new position is opened in a symbol
 whose price is more than `max_price_gap_pct` (10%) away from its last close.
 Sells are never blocked, since a big gap down is exactly when an exit matters.
 
+### Correlation tracker
+
+`rhtrader correlation --snapshot <dir> [--pair SPMO SCHD]` reports how two
+funds move relative to each other: the 52-week correlation of weekly returns
+(and where it was 1, 3 and 12 months ago), a faster 3-month correlation,
+and the last 12 months side by side with opposite-direction months flagged.
+It flags when the 52-week correlation moves between bands (below 0.30
+diversifying, 0.30-0.70 moderate, above 0.70 moving together). It needs
+about 3 years of daily bars in `get_equity_historicals.json`.
+
 ## Safety rails
 
 | Guard | Default | Behavior |
@@ -168,6 +178,7 @@ rhtrader/
   data.py              CSV / Robinhood bar loading
   robinhood_mcp.py     OAuth + MCP client for Robinhood Agentic Trading
   snapshot.py          plan orders from saved Robinhood tool responses
+  correlation.py       track how two funds move relative to each other
   config.py            TOML config
   cli.py               command-line entry point
 ```

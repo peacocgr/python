@@ -7,6 +7,7 @@
     python -m rhtrader status     [--config FILE]
     python -m rhtrader fetch-data [--config FILE] [--years N]
     python -m rhtrader plan       [--config FILE] --snapshot DIR [--assume-cash N]
+    python -m rhtrader correlation --snapshot DIR [--pair SPMO SCHD]
 
 ``trade`` is a dry run unless ``--execute`` is given. Real orders need all
 three of: ``broker.mode = "live"`` in the config, ``--execute`` and ``--live``.
@@ -210,6 +211,18 @@ def cmd_plan(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_correlation(cfg: Config, args: argparse.Namespace) -> int:
+    import json
+
+    from .correlation import format_report, report_from_snapshot
+
+    report = report_from_snapshot(args.snapshot, *args.pair)
+    print(format_report(report))
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2))
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     with _connect(cfg) if cfg.data.source == "robinhood" else nullcontext() as rh:
         bars = _load_bars(cfg, rh)
@@ -259,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--assume-cash", type=float, help="size orders as if the account held this")
     pl.add_argument("--out", help="write the plan as JSON here")
 
+    co = sub.add_parser("correlation", help="how two funds move relative to each other")
+    co.add_argument("--snapshot", required=True, help="directory with get_equity_historicals.json")
+    co.add_argument("--pair", nargs=2, default=["SPMO", "SCHD"], metavar=("A", "B"))
+    co.add_argument("--out", help="also write the report as JSON here")
+
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     handler = {
@@ -269,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": cmd_status,
         "fetch-data": cmd_fetch_data,
         "plan": cmd_plan,
+        "correlation": cmd_correlation,
     }
     try:
         return handler[args.command](cfg, args)

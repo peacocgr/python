@@ -101,8 +101,15 @@ def run_cycle(
     prices: dict[str, float] = {}
     for sym in list(signals):
         px = broker.latest_price(sym)
+        last_close = float(bars[sym]["close"].iloc[-1])
         if px is None or px <= 0:
             skipped[sym] = "no price available"
+            signals.pop(sym)
+        elif abs(px / last_close - 1) > cfg.risk.max_price_gap_pct:
+            skipped[sym] = (
+                f"price {px:,.2f} is more than {cfg.risk.max_price_gap_pct:.0%} "
+                f"from last close {last_close:,.2f}; check the data"
+            )
             signals.pop(sym)
         else:
             prices[sym] = px

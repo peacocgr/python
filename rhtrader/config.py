@@ -44,6 +44,9 @@ class RiskConfig:
     max_orders_per_run: int = 10
     # Refuse to trade a symbol whose latest completed bar is older than this.
     max_data_age_days: int = 5
+    # Skip a symbol whose live price is this far from its last close
+    # (bad quote, bad data, or a halt/gap worth a human look).
+    max_price_gap_pct: float = 0.10
     # If this file exists, the trader refuses to place any orders.
     kill_switch_file: str = "KILL"
 

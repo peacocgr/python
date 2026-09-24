@@ -109,6 +109,25 @@ with cron:
 Orders use a day time-in-force (`gfd`), so orders placed after the close queue
 for the next session. That matches the backtest's next-open fills.
 
+## Scheduled cloud mode (no Mac needed)
+
+If you'd rather not run rhtrader on your own computer, a scheduled Claude
+session can drive it through Claude's Robinhood connection:
+
+1. Claude calls only read-only Robinhood tools (`get_equity_historicals`,
+   `get_equity_quotes`, `get_portfolio`, `get_equity_positions`,
+   `get_equity_orders`) and saves each JSON response to `<dir>/<tool>.json`.
+2. `rhtrader plan --snapshot <dir>` runs the strategy and all risk checks on
+   that data and prints the orders, as exact `place_equity_order` arguments.
+   The planner refuses to call any order tool itself.
+3. In dry-run mode the session just reports the plan. `--assume-cash 10000`
+   sizes orders as if the account held that much, which is useful before
+   you fund it.
+
+The model never chooses trades; it only moves data and reports. As an extra
+guard against bad or mistyped data, any symbol whose price is more than
+`max_price_gap_pct` (10%) away from its last close is skipped.
+
 ## Safety rails
 
 | Guard | Default | Behavior |
@@ -123,6 +142,7 @@ for the next session. That matches the backtest's next-open fills.
 | Limit orders | 0.20% buffer | Whole-share orders are limit orders near the last price |
 | Stale data | 5 days | Symbols with old data are skipped |
 | Universe | config | Orders for symbols outside `symbols` are rejected |
+| Price sanity | 10% | Symbols priced more than 10% from their last close are skipped |
 
 ## Going live (suggested path)
 
@@ -146,6 +166,7 @@ rhtrader/
   broker.py            PaperBroker, RobinhoodBroker
   data.py              CSV / Robinhood bar loading
   robinhood_mcp.py     OAuth + MCP client for Robinhood Agentic Trading
+  snapshot.py          plan orders from saved Robinhood tool responses
   config.py            TOML config
   cli.py               command-line entry point
 ```

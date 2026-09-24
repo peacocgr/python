@@ -6,6 +6,7 @@
     python -m rhtrader trade      [--config FILE] [--execute] [--live]
     python -m rhtrader status     [--config FILE]
     python -m rhtrader fetch-data [--config FILE] [--years N]
+    python -m rhtrader plan       [--config FILE] --snapshot DIR [--assume-cash N]
 
 ``trade`` is a dry run unless ``--execute`` is given. Real orders need all
 three of: ``broker.mode = "live"`` in the config, ``--execute`` and ``--live``.
@@ -198,6 +199,17 @@ def cmd_fetch_data(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan(cfg: Config, args: argparse.Namespace) -> int:
+    from .snapshot import format_plan, plan_from_snapshot, write_plan
+
+    plan, _ = plan_from_snapshot(cfg, args.snapshot, assume_cash=args.assume_cash)
+    print(format_plan(plan))
+    if args.out:
+        write_plan(plan, args.out)
+        print(f"\nplan written to {args.out}")
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     with _connect(cfg) if cfg.data.source == "robinhood" else nullcontext() as rh:
         bars = _load_bars(cfg, rh)
@@ -242,6 +254,11 @@ def main(argv: list[str] | None = None) -> int:
     fd = sub.add_parser("fetch-data", help="download daily bars from Robinhood to CSV")
     fd.add_argument("--years", type=float, default=10, help="how much history (default 10)")
 
+    pl = sub.add_parser("plan", help="plan orders from saved Robinhood tool responses")
+    pl.add_argument("--snapshot", required=True, help="directory of <tool>.json responses")
+    pl.add_argument("--assume-cash", type=float, help="size orders as if the account held this")
+    pl.add_argument("--out", help="write the plan as JSON here")
+
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     handler = {
@@ -251,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         "trade": cmd_trade,
         "status": cmd_status,
         "fetch-data": cmd_fetch_data,
+        "plan": cmd_plan,
     }
     try:
         return handler[args.command](cfg, args)

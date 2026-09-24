@@ -7,7 +7,7 @@ import pytest
 
 from rhtrader.broker import Account, Order, PaperBroker, RobinhoodBroker
 from rhtrader.config import load_config
-from rhtrader.data import NEW_YORK, drop_incomplete_bar
+from rhtrader.data import NEW_YORK, drop_incomplete_bar, fetch_robinhood
 from rhtrader.risk import check_orders
 from rhtrader.trader import latest_signals, plan_orders, run_cycle
 
@@ -138,39 +138,73 @@ def test_run_cycle_dry_run_then_execute(cfg):
     assert len(lines) == 3 and json.loads(lines[1])["results"]
 
 
-def _fake_rh(orders_placed):
-    def place(side):
-        def f(symbol, quantity, limitPrice, timeInForce, extendedHours):
-            orders_placed.append((side, symbol, quantity, limitPrice, timeInForce))
+class FakeMCP:
+    """Stands in for RobinhoodMCP; responses mirror Robinhood's tool payloads."""
+
+    def __init__(self, review_alerts=None, positions=None):
+        self.calls = []
+        self.review_alerts = review_alerts or []
+        self.positions = positions or []
+
+    def call(self, tool, args=None):
+        self.calls.append((tool, args))
+        if tool == "get_equity_quotes":
+            return {"results": [{"quote": {"symbol": s, "last_trade_price": "15.000000", "state": "active"}}
+                                for s in args["symbols"]]}
+        if tool == "get_portfolio":
+            return {"total_value": "10000", "cash": "10000",
+                    "buying_power": {"buying_power": "20000.0000", "unleveraged_buying_power": "10000.0000"}}
+        if tool == "get_equity_positions":
+            return {"positions": self.positions}
+        if tool == "get_equity_orders":
+            return {"orders": [{"symbol": "BBB", "state": "queued"}, {"symbol": "AAA", "state": "filled"}]}
+        if tool == "review_equity_order":
+            return {"quote": {}, "alerts": self.review_alerts}
+        if tool == "place_equity_order":
             return {"id": "abc", "state": "queued"}
-        return f
-
-    return SimpleNamespace(
-        stocks=SimpleNamespace(
-            get_latest_price=lambda s, includeExtendedHours: ["15.00"],
-            get_symbol_by_url=lambda url: url.rsplit("/", 1)[-1],
-        ),
-        profiles=SimpleNamespace(
-            load_portfolio_profile=lambda: {"equity": "10000.00"},
-            load_account_profile=lambda: {"cash": "10000.00", "buying_power": "20000.00"},
-        ),
-        account=SimpleNamespace(build_holdings=lambda: {}),
-        orders=SimpleNamespace(
-            get_all_open_stock_orders=lambda: [{"instrument": "https://x/BBB"}],
-            order_buy_limit=place("buy"),
-            order_sell_limit=place("sell"),
-        ),
-    )
+        raise AssertionError(f"unexpected tool {tool}")
 
 
-def test_robinhood_broker_places_limit_orders_and_skips_pending(cfg):
-    placed = []
-    broker = RobinhoodBroker(_fake_rh(placed))
+def test_robinhood_broker_reviews_then_places_and_skips_pending(cfg):
+    fake = FakeMCP()
+    broker = RobinhoodBroker(fake, "ACCT1")
     bars = {"AAA": make_bars(UP), "BBB": make_bars(UP)}
     report = run_cycle(cfg, broker, bars, dry_run=False, now=_after_close(bars["AAA"]))
     assert "open order" in report.skipped["BBB"]
-    assert placed == [("buy", "AAA", 332.0, 15.03, "gfd")]
+    tools = [t for t, _ in fake.calls]
+    assert tools.index("review_equity_order") < tools.index("place_equity_order")
+    placed = dict(fake.calls)["place_equity_order"]
+    assert placed["account_number"] == "ACCT1"
+    assert (placed["symbol"], placed["side"], placed["type"]) == ("AAA", "buy", "limit")
+    assert (placed["quantity"], placed["limit_price"], placed["time_in_force"]) == ("332", "15.03", "gfd")
+    assert placed["ref_id"]
     assert report.results[0]["order_id"] == "abc"
+
+
+def test_robinhood_broker_skips_orders_flagged_by_review(cfg):
+    fake = FakeMCP(review_alerts=[{"type": "buying_power", "message": "insufficient"}])
+    broker = RobinhoodBroker(fake, "ACCT1")
+    result = broker.submit(Order("AAA", "buy", 1, 15, 15.03))
+    assert result["status"] == "skipped" and result["alerts"]
+    assert "place_equity_order" not in [t for t, _ in fake.calls]
+
+
+def test_robinhood_account_never_uses_margin():
+    fake = FakeMCP(positions=[{"symbol": "AAA", "quantity": "3.0000", "type": "long"}])
+    acct = RobinhoodBroker(fake, "ACCT1").account()
+    assert acct.cash == 10_000  # not the 20k margin buying power
+    assert acct.positions == {"AAA": 3.0}
+
+
+def test_fetch_robinhood_parses_bars_and_drops_interpolated():
+    bar = lambda d, px, interp=False: {"begins_at": f"{d}T00:00:00Z", "open_price": str(px),
+                                        "high_price": str(px), "low_price": str(px),
+                                        "close_price": str(px), "volume": 10, "interpolated": interp}
+    fake = SimpleNamespace(call=lambda tool, args: {"results": [
+        {"symbol": "AAA", "bars": [bar("2026-01-02", 1), bar("2026-01-03", 9, True), bar("2026-01-05", 2)]}
+    ]})
+    df = fetch_robinhood(fake, ["AAA"], datetime(2026, 1, 1, tzinfo=NEW_YORK))["AAA"]
+    assert list(df["close"]) == [1.0, 2.0]
 
 
 # --- config -----------------------------------------------------------------
@@ -178,6 +212,13 @@ def test_robinhood_broker_places_limit_orders_and_skips_pending(cfg):
 def test_example_config_loads():
     cfg = load_config(Path(__file__).parent.parent / "config.example.toml")
     assert cfg.broker.mode == "paper"
+
+
+def test_live_mode_requires_account_number(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[broker]\nmode = "live"\n')
+    with pytest.raises(ValueError, match="account_number"):
+        load_config(p)
 
 
 def test_config_rejects_unknown_keys(tmp_path):

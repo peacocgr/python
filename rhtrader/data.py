@@ -26,25 +26,40 @@ def load_csv(csv_dir: str | Path, symbol: str) -> pd.DataFrame:
     return df[COLUMNS].astype(float).sort_index()
 
 
-def fetch_robinhood(rh, symbol: str, span: str = "5year") -> pd.DataFrame:
-    """Fetch daily bars via a logged-in ``robin_stocks.robinhood`` module."""
-    rows = rh.stocks.get_stock_historicals(
-        symbol, interval="day", span=span, bounds="regular"
-    )
-    if not rows:
-        raise RuntimeError(f"Robinhood returned no historical data for {symbol}")
+def fetch_robinhood(
+    client, symbols: list[str], start: datetime
+) -> dict[str, pd.DataFrame]:
+    """Fetch split-adjusted daily bars through Robinhood's MCP server.
+
+    ``client`` is a connected :class:`rhtrader.robinhood_mcp.RobinhoodMCP`.
+    """
+    start_time = start.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out: dict[str, pd.DataFrame] = {}
+    for i in range(0, len(symbols), 10):  # the tool accepts 10 symbols per call
+        data = client.call(
+            "get_equity_historicals",
+            {"symbols": symbols[i : i + 10], "start_time": start_time, "interval": "day"},
+        )
+        for result in data["results"]:
+            out[result["symbol"]] = _bars_to_frame(result["bars"])
+    missing = set(symbols) - set(out)
+    if missing:
+        raise RuntimeError(f"Robinhood returned no bars for {sorted(missing)}")
+    return out
+
+
+def _bars_to_frame(bars: list[dict]) -> pd.DataFrame:
+    bars = [b for b in bars if not b.get("interpolated")]
     df = pd.DataFrame(
         {
-            "date": pd.to_datetime([r["begins_at"][:10] for r in rows]),
-            "open": [r["open_price"] for r in rows],
-            "high": [r["high_price"] for r in rows],
-            "low": [r["low_price"] for r in rows],
-            "close": [r["close_price"] for r in rows],
-            "volume": [r["volume"] for r in rows],
+            "date": pd.to_datetime([b["begins_at"][:10] for b in bars]),
+            "open": [b["open_price"] for b in bars],
+            "high": [b["high_price"] for b in bars],
+            "low": [b["low_price"] for b in bars],
+            "close": [b["close_price"] for b in bars],
+            "volume": [b["volume"] for b in bars],
         }
     ).set_index("date")
-    if "interpolated" in rows[0]:
-        df = df[[not r.get("interpolated") for r in rows]]
     return df[COLUMNS].astype(float).sort_index()
 
 

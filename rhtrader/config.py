@@ -1,14 +1,12 @@
 """Configuration loading.
 
-Settings live in a TOML file (see ``config.example.toml``). Credentials are
-never stored there; they come from environment variables:
-
-    RH_USERNAME, RH_PASSWORD, RH_TOTP_SECRET (optional, for automated MFA)
+Settings live in a TOML file (see ``config.example.toml``). No credentials
+are stored there: Robinhood access uses OAuth (``rhtrader login``), and the
+tokens are kept in ``robinhood.token_file``.
 """
 
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +62,17 @@ class DataConfig:
 
 
 @dataclass
+class RobinhoodConfig:
+    mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    # The account you enabled for agentic trading. `rhtrader accounts` lists it.
+    account_number: str = ""
+    token_file: str = "~/.config/rhtrader/oauth.json"
+    callback_port: int = 8765
+    # Run Robinhood's pre-trade review first; skip any order it flags.
+    review_orders: bool = True
+
+
+@dataclass
 class Config:
     symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ"])
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
@@ -72,6 +81,7 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    robinhood: RobinhoodConfig = field(default_factory=RobinhoodConfig)
     trade_log: str = "state/trades.jsonl"
 
     @property
@@ -92,6 +102,11 @@ class Config:
             raise ValueError("data.source must be 'csv' or 'robinhood'")
         if not 0 <= self.portfolio.cash_buffer_pct < 1:
             raise ValueError("portfolio.cash_buffer_pct must be in [0, 1)")
+        if self.broker.mode == "live" and not self.robinhood.account_number:
+            raise ValueError(
+                "broker.mode = 'live' needs robinhood.account_number "
+                "(run `rhtrader accounts` to find your agentic account)"
+            )
 
 
 _SECTIONS = {
@@ -101,6 +116,7 @@ _SECTIONS = {
     "risk": RiskConfig,
     "broker": BrokerConfig,
     "data": DataConfig,
+    "robinhood": RobinhoodConfig,
 }
 
 
@@ -127,21 +143,3 @@ def load_config(path: str | Path | None) -> Config:
     cfg = Config(**kwargs)
     cfg.validate()
     return cfg
-
-
-@dataclass
-class Credentials:
-    username: str
-    password: str
-    totp_secret: str | None = None
-
-    @classmethod
-    def from_env(cls) -> "Credentials":
-        try:
-            return cls(
-                username=os.environ["RH_USERNAME"],
-                password=os.environ["RH_PASSWORD"],
-                totp_secret=os.environ.get("RH_TOTP_SECRET") or None,
-            )
-        except KeyError as e:
-            raise RuntimeError(f"missing environment variable {e.args[0]}") from None

@@ -8,20 +8,20 @@ A small, testable trading bot for US stocks and ETFs on Robinhood:
 - **Backtester:** signals on each close, fills at the **next** day's open
   plus slippage, so it cannot see the future.
 - **Paper trading:** a simulated account saved to `state/paper.json`.
-- **Live trading:** through [`robin_stocks`](https://github.com/jmfernandes/robin_stocks),
-  behind three separate opt-ins, with risk limits and a kill switch.
+- **Live trading:** through Robinhood's official **Agentic Trading** MCP server,
+  signed in with **OAuth** (no username or password), behind three separate
+  opt-ins, with risk limits and a kill switch.
 
-> **Read this first.** Robinhood has **no official API for stocks**.
-> `robin_stocks` uses the private API behind the Robinhood app, with your
-> username, password and MFA. It can break without notice, and automated
-> use may conflict with Robinhood's terms. This is not investment advice.
-> Past backtest results don't predict future returns.
+> **Read this first.** The bot can only trade in the one account you enable
+> for agentic trading in the Robinhood app, and Robinhood notifies you of
+> every agent trade. This is not investment advice. Past backtest results
+> don't predict future returns.
 
 ## Quick start
 
 ```bash
-pip install -e ".[dev]"          # add ",live" for Robinhood access
-python -m pytest                  # 22 tests
+pip install -e ".[dev]"          # includes the MCP/OAuth client
+python -m pytest
 
 python -m rhtrader backtest                      # SPY + QQQ, 50/200 SMA
 python -m rhtrader backtest --fast 20 --slow 100 --trades
@@ -50,18 +50,39 @@ sharp crashes like March 2020. It cut volatility, and it would help most in
 long, slow bear markets. Test other windows and symbols before trusting it.
 Both columns use price returns only, without dividends.
 
+## Connecting to Robinhood (OAuth)
+
+rhtrader talks to Robinhood's Agentic Trading MCP server
+(`https://agent.robinhood.com/mcp/trading`) and signs in with OAuth 2.1 + PKCE.
+You never give it your username or password.
+
+1. In the Robinhood app, turn on **Agentic Trading** for an account and fund
+   it. Keep only what you're willing to let the bot trade in it.
+2. Authorize rhtrader once:
+   ```bash
+   python -m rhtrader login
+   ```
+   This opens Robinhood's sign-in page in your browser. After you approve,
+   Robinhood redirects to `http://127.0.0.1:8765/callback`, and rhtrader saves
+   the tokens to `~/.config/rhtrader/oauth.json` (readable only by you). The
+   command then lists your accounts and marks the one the bot can trade.
+3. Put that account number in `config.toml` under `[robinhood]`.
+
+Later runs, including scheduled ones, refresh the access token silently.
+If the authorization is revoked or can't be refreshed, commands exit with
+`run rhtrader login` instead of hanging on a browser prompt. To revoke
+access, disconnect the agent in the Robinhood app and delete the token file.
+
+Every live order first goes through Robinhood's pre-trade review
+(`review_equity_order`). If the review returns **any** alerts, such as
+buying power or a trading halt, the order is skipped and the alerts are
+logged. Orders carry an idempotency key (`ref_id`), so a retried request
+can't create a duplicate order.
+
 ## Configuration
 
 Copy `config.example.toml` to `config.toml` and pass `-c config.toml`. Every
 key is documented in the example. `config.toml` is git-ignored.
-
-Credentials only come from environment variables, never from the config:
-
-```bash
-export RH_USERNAME=you@example.com
-export RH_PASSWORD='...'
-export RH_TOTP_SECRET='...'   # optional: base32 secret from your authenticator app setup
-```
 
 ## How a trading cycle works (`rhtrader trade`)
 
@@ -106,10 +127,11 @@ for the next session. That matches the backtest's next-open fills.
 ## Going live (suggested path)
 
 1. Backtest your symbols and parameters. Understand the drawdowns.
-2. Set `data.source = "robinhood"` and paper trade for a few weeks with
-   `trade --execute`. Check `state/trades.jsonl` every day.
-3. Set `broker.mode = "live"`, start with a small `max_order_notional`, and run
-   `trade --live` (a dry run against your real account) to check the orders.
+2. Run `rhtrader login`, set `data.source = "robinhood"`, and paper trade for
+   a few weeks with `trade --execute`. Check `state/trades.jsonl` every day.
+3. Set `broker.mode = "live"` and `robinhood.account_number`, start with a
+   small `max_order_notional`, and run `trade --live` (a dry run against your
+   real account) to check the orders.
 4. Only then, schedule `trade --execute --live`.
 
 ## Layout
@@ -123,7 +145,7 @@ rhtrader/
   risk.py              pre-trade checks and kill switch
   broker.py            PaperBroker, RobinhoodBroker
   data.py              CSV / Robinhood bar loading
-  robinhood_client.py  robin_stocks login (lazy import)
-  config.py            TOML config and env credentials
+  robinhood_mcp.py     OAuth + MCP client for Robinhood Agentic Trading
+  config.py            TOML config
   cli.py               command-line entry point
 ```

@@ -1,4 +1,4 @@
-"""Brokers: a local paper-trading simulator and a live Robinhood adapter.
+"""Brokers: a local paper-trading simulator and a live Robinhood (OAuth/MCP) adapter.
 
 Both expose the same small interface used by the trader:
 
@@ -11,9 +11,11 @@ Both expose the same small interface used by the trader:
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 @dataclass
@@ -108,56 +110,118 @@ class PaperBroker:
         return {"status": "filled", "fill_price": round(px, 4)}
 
 
-class RobinhoodBroker:
-    """Live trading through a logged-in ``robin_stocks.robinhood`` module."""
+OPEN_ORDER_STATES = {"new", "queued", "confirmed", "unconfirmed", "partially_filled"}
 
-    def __init__(self, rh):
-        self.rh = rh
+
+class RobinhoodBroker:
+    """Live trading through Robinhood's Agentic Trading MCP server (OAuth).
+
+    ``client`` is a connected :class:`rhtrader.robinhood_mcp.RobinhoodMCP`
+    (anything with ``call(tool, arguments) -> data`` works, which keeps this
+    testable). Orders can only go to the account you enabled for agents.
+    """
+
+    def __init__(self, client, account_number: str, review: bool = True):
+        self.client = client
+        self.account_number = account_number
+        self.review = review
+
+    def _pages(self, tool: str, key: str, **args) -> list[dict]:
+        items: list[dict] = []
+        args = {"account_number": self.account_number, **args}
+        for _ in range(50):
+            data = self.client.call(tool, args)
+            items.extend(data.get(key) or [])
+            cursor = _next_cursor(data.get("next"))
+            if not cursor:
+                break
+            args["cursor"] = cursor
+        return items
 
     def latest_price(self, symbol: str) -> float | None:
-        prices = self.rh.stocks.get_latest_price(symbol, includeExtendedHours=False)
-        return float(prices[0]) if prices and prices[0] else None
+        data = self.client.call("get_equity_quotes", {"symbols": [symbol]})
+        for r in data.get("results", []):
+            q = r.get("quote") or {}
+            if q.get("symbol") == symbol and q.get("state", "active") == "active":
+                px = q.get("last_trade_price")
+                return float(px) if px else None
+        return None
 
     def account(self) -> Account:
-        portfolio = self.rh.profiles.load_portfolio_profile()
-        equity = portfolio.get("equity") or portfolio.get("extended_hours_equity")
-        # On margin accounts buying_power includes borrowing; never use margin.
-        profile = self.rh.profiles.load_account_profile()
-        cash = min(float(profile["cash"]), float(profile["buying_power"]))
-        holdings = self.rh.account.build_holdings()
-        positions = {
-            sym: float(h["quantity"])
-            for sym, h in holdings.items()
-            if float(h["quantity"]) > 0
-        }
-        return Account(float(equity), cash, positions)
+        p = self.client.call("get_portfolio", {"account_number": self.account_number})
+        bp = p.get("buying_power") or {}
+        # Never use margin: spend at most the smallest cash-like figure.
+        spendable = [
+            float(v)
+            for v in (p.get("cash"), bp.get("buying_power"), bp.get("unleveraged_buying_power"))
+            if v is not None
+        ]
+        positions: dict[str, float] = {}
+        for pos in self._pages("get_equity_positions", "positions"):
+            qty = float(pos.get("quantity") or 0)
+            if qty > 0 and pos.get("type", "long") == "long":
+                positions[pos["symbol"]] = qty
+        return Account(float(p["total_value"]), min(spendable, default=0.0), positions)
 
     def open_order_symbols(self) -> set[str]:
-        symbols = set()
-        for o in self.rh.orders.get_all_open_stock_orders() or []:
-            symbols.add(self.rh.stocks.get_symbol_by_url(o["instrument"]))
-        return symbols
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        orders = self._pages("get_equity_orders", "orders", created_at_gte=since)
+        return {o["symbol"] for o in orders if o.get("state") in OPEN_ORDER_STATES}
 
     def submit(self, order: Order) -> dict:
-        o = self.rh.orders
+        args = {
+            "account_number": self.account_number,
+            "symbol": order.symbol,
+            "side": order.side,
+            "quantity": _fmt_qty(order.quantity),
+            "time_in_force": "gfd",
+            "market_hours": "regular_hours",
+        }
         if order.limit_price is None:
-            place = (
-                o.order_buy_fractional_by_quantity
-                if order.side == "buy"
-                else o.order_sell_fractional_by_quantity
-            )
-            resp = place(
-                order.symbol, order.quantity, timeInForce="gfd", extendedHours=False
-            )
+            args["type"] = "market"
         else:
-            place = o.order_buy_limit if order.side == "buy" else o.order_sell_limit
-            resp = place(
-                order.symbol,
-                order.quantity,
-                order.limit_price,
-                timeInForce="gfd",
-                extendedHours=False,
-            )
-        if not resp or "id" not in resp:
+            args["type"] = "limit"
+            args["limit_price"] = f"{order.limit_price:.2f}"
+
+        if self.review:
+            review = self.client.call("review_equity_order", args)
+            alerts = _find_alerts(review)
+            if alerts:
+                return {"status": "skipped", "reason": "pre-trade review alerts", "alerts": alerts}
+
+        # Same ref_id on retry so Robinhood de-duplicates a resent order.
+        args["ref_id"] = str(uuid.uuid4())
+        try:
+            resp = self.client.call("place_equity_order", args)
+        except (TimeoutError, ConnectionError):
+            resp = self.client.call("place_equity_order", args)
+        placed = resp.get("order", resp) if isinstance(resp, dict) else {}
+        if not placed.get("id"):
             return {"status": "error", "response": resp}
-        return {"status": resp.get("state", "submitted"), "order_id": resp["id"]}
+        return {"status": placed.get("state", "submitted"), "order_id": placed["id"]}
+
+
+def _fmt_qty(qty: float) -> str:
+    return f"{qty:.6f}".rstrip("0").rstrip(".")
+
+
+def _next_cursor(next_url) -> str | None:
+    if not next_url:
+        return None
+    values = parse_qs(urlparse(str(next_url)).query).get("cursor")
+    return values[0] if values else None
+
+
+def _find_alerts(obj) -> list:
+    """Collect every non-empty value under a key mentioning 'alert'."""
+    found: list = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if "alert" in k.lower() and v:
+                found.extend(v if isinstance(v, list) else [v])
+            else:
+                found.extend(_find_alerts(v))
+    elif isinstance(obj, list):
+        for v in obj:
+            found.extend(_find_alerts(v))
+    return found

@@ -10,8 +10,8 @@ requires-python = ">=3.11"
 dependencies = ["pandas>=2.0", "numpy>=1.24"]
 
 [project.optional-dependencies]
-live = ["robin_stocks>=3.0", "pyotp>=2.8"]
-dev = ["pytest>=7"]
+live = ["mcp>=2.2,<3"]
+dev = ["pytest>=7", "mcp>=2.2,<3", "uvicorn"]
 
 [project.scripts]
 rhtrader = "rhtrader.cli:main"

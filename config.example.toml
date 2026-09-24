@@ -1,5 +1,5 @@
-# Copy to config.toml and adjust. Credentials are NOT stored here; set
-# RH_USERNAME, RH_PASSWORD and (optionally) RH_TOTP_SECRET in the environment.
+# Copy to config.toml and adjust. No credentials go here: run
+# `rhtrader login` once to authorize via Robinhood's OAuth sign-in page.
 
 symbols = ["SPY", "QQQ"]
 trade_log = "state/trades.jsonl"
@@ -35,6 +35,16 @@ paper_starting_cash = 10000
 
 [data]
 # "csv" reads data/<SYMBOL>.csv; "robinhood" fetches fresh daily bars
-# (needs credentials). Use "robinhood" for real paper trading.
+# over OAuth (run `rhtrader login` first). Use "robinhood" for real paper trading.
 source = "csv"
 csv_dir = "data"
+
+[robinhood]
+# Robinhood Agentic Trading MCP server (OAuth 2.1 + PKCE).
+mcp_url = "https://agent.robinhood.com/mcp/trading"
+# The account you enabled for agentic trading; `rhtrader accounts` prints it.
+# Required for broker.mode = "live".
+account_number = ""
+token_file = "~/.config/rhtrader/oauth.json"  # created with mode 0600
+callback_port = 8765                           # local port for the OAuth redirect
+review_orders = true  # run Robinhood's pre-trade review; skip orders it flags

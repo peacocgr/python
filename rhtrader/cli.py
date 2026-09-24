@@ -1,9 +1,11 @@
 """Command-line interface.
 
-    python -m rhtrader backtest [--config FILE] [--fast N --slow N] [--start DATE]
-    python -m rhtrader trade    [--config FILE] [--execute] [--live]
-    python -m rhtrader status   [--config FILE]
-    python -m rhtrader fetch-data [--config FILE] [--span 5year]
+    python -m rhtrader login      [--config FILE]   one-time browser OAuth sign-in
+    python -m rhtrader accounts   [--config FILE]
+    python -m rhtrader backtest   [--config FILE] [--fast N --slow N] [--start DATE]
+    python -m rhtrader trade      [--config FILE] [--execute] [--live]
+    python -m rhtrader status     [--config FILE]
+    python -m rhtrader fetch-data [--config FILE] [--years N]
 
 ``trade`` is a dry run unless ``--execute`` is given. Real orders need all
 three of: ``broker.mode = "live"`` in the config, ``--execute`` and ``--live``.
@@ -13,13 +15,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import nullcontext
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 
 from .backtest import run_backtest
 from .broker import PaperBroker, RobinhoodBroker
-from .config import Config, Credentials, load_config
+from .config import Config, load_config
 from .data import fetch_robinhood, load_csv
 from .risk import kill_switch_engaged
 from .trader import run_cycle
@@ -29,14 +34,47 @@ def _pct(x: float) -> str:
     return "n/a" if x != x else f"{x * 100:7.2f}%"
 
 
-def _load_bars(cfg: Config, rh=None) -> dict[str, pd.DataFrame]:
-    if cfg.data.source == "robinhood":
-        if rh is None:
-            from .robinhood_client import login
+def _connect(cfg: Config, interactive: bool = False):
+    """Robinhood MCP session (OAuth). Use as a context manager."""
+    from .robinhood_mcp import RobinhoodMCP
 
-            rh = login(Credentials.from_env())
-        return {s: fetch_robinhood(rh, s) for s in cfg.symbols}
+    rc = cfg.robinhood
+    return RobinhoodMCP(rc.mcp_url, rc.token_file, rc.callback_port, interactive=interactive)
+
+
+def _load_bars(cfg: Config, rh=None, years: float = 2) -> dict[str, pd.DataFrame]:
+    if cfg.data.source == "robinhood":
+        start = datetime.now(timezone.utc) - timedelta(days=int(365.25 * years))
+        return fetch_robinhood(rh, cfg.symbols, start)
     return {s: load_csv(cfg.data.csv_dir, s) for s in cfg.symbols}
+
+
+def _print_accounts(rh) -> None:
+    accounts = rh.call("get_accounts")["accounts"]
+    print(f"{'account_number':16}{'type':18}{'nickname':14}agent can trade")
+    for a in accounts:
+        print(
+            f"{a['account_number']:16}{a.get('brokerage_account_type', ''):18}"
+            f"{a.get('nickname', ''):14}{'YES' if a.get('agentic_allowed') else 'no'}"
+        )
+    tradable = [a["account_number"] for a in accounts if a.get("agentic_allowed")]
+    if tradable:
+        print(f'\nSet this in config.toml:\n  [robinhood]\n  account_number = "{tradable[0]}"')
+    else:
+        print("\nNo account is enabled for agentic trading. Enable one in the Robinhood app.")
+
+
+def cmd_login(cfg: Config, args: argparse.Namespace) -> int:
+    with _connect(cfg, interactive=True) as rh:
+        print(f"Authorized. Tokens saved to {cfg.robinhood.token_file}\n")
+        _print_accounts(rh)
+    return 0
+
+
+def cmd_accounts(cfg: Config, args: argparse.Namespace) -> int:
+    with _connect(cfg) as rh:
+        _print_accounts(rh)
+    return 0
 
 
 def cmd_backtest(cfg: Config, args: argparse.Namespace) -> int:
@@ -93,30 +131,27 @@ def cmd_trade(cfg: Config, args: argparse.Namespace) -> int:
     if kill_switch_engaged(cfg):
         print(f"Kill switch engaged ({cfg.risk.kill_switch_file} exists). No orders.")
 
-    rh = None
-    if live or cfg.data.source == "robinhood":
-        from .robinhood_client import login
-
-        rh = login(Credentials.from_env())
-    bars = _load_bars(cfg, rh)
-
-    if live:
-        broker = RobinhoodBroker(rh)
-    else:
-        if rh is not None:
-            prices = {s: RobinhoodBroker(rh).latest_price(s) for s in cfg.symbols}
+    needs_robinhood = live or cfg.data.source == "robinhood"
+    with _connect(cfg) if needs_robinhood else nullcontext() as rh:
+        bars = _load_bars(cfg, rh)
+        if live:
+            broker = RobinhoodBroker(rh, cfg.robinhood.account_number, cfg.robinhood.review_orders)
         else:
-            prices = {s: float(df["close"].iloc[-1]) for s, df in bars.items()}
-        broker = PaperBroker(
-            cfg.broker.paper_state,
-            cfg.broker.paper_starting_cash,
-            prices,
-            cfg.execution.slippage_bps,
-            cfg.execution.commission,
-        )
+            if rh is not None:
+                quotes = RobinhoodBroker(rh, cfg.robinhood.account_number)
+                prices = {s: quotes.latest_price(s) for s in cfg.symbols}
+            else:
+                prices = {s: float(df["close"].iloc[-1]) for s, df in bars.items()}
+            broker = PaperBroker(
+                cfg.broker.paper_state,
+                cfg.broker.paper_starting_cash,
+                prices,
+                cfg.execution.slippage_bps,
+                cfg.execution.commission,
+            )
 
-    dry_run = not args.execute
-    report = run_cycle(cfg, broker, bars, dry_run=dry_run)
+        dry_run = not args.execute
+        report = run_cycle(cfg, broker, bars, dry_run=dry_run)
 
     mode = f"{cfg.broker.mode.upper()}{' (dry run)' if dry_run else ''}"
     acct = report.account
@@ -140,30 +175,30 @@ def cmd_trade(cfg: Config, args: argparse.Namespace) -> int:
     for o, reason in report.risk.rejected:
         print(f"  REJECTED {o.side} {o.quantity:g} {o.symbol}: {reason}")
     for r in report.results:
-        print(f"  -> {r['order']['symbol']} {r['order']['side']}: {r['status']}"
-              + (f" {r.get('reason') or r.get('error') or ''}" if r["status"] not in ("filled",) else ""))
+        detail = r.get("reason") or r.get("error") or r.get("order_id") or ""
+        print(f"  -> {r['order']['symbol']} {r['order']['side']}: {r['status']} {detail}")
+        for alert in r.get("alerts", []):
+            print(f"       alert: {alert}")
     if dry_run and report.risk.approved:
         print("Dry run: nothing was submitted. Re-run with --execute to place these orders.")
     return 0
 
 
 def cmd_fetch_data(cfg: Config, args: argparse.Namespace) -> int:
-    from pathlib import Path
-
-    from .robinhood_client import login
-
-    rh = login(Credentials.from_env())
+    start = datetime.now(timezone.utc) - timedelta(days=int(365.25 * args.years))
+    with _connect(cfg) as rh:
+        bars = fetch_robinhood(rh, cfg.symbols, start)
     out = Path(cfg.data.csv_dir)
     out.mkdir(parents=True, exist_ok=True)
-    for sym in cfg.symbols:
-        df = fetch_robinhood(rh, sym, span=args.span)
+    for sym, df in bars.items():
         df.to_csv(out / f"{sym}.csv", index_label="date", date_format="%Y-%m-%d")
         print(f"{sym}: {len(df)} bars, {df.index[0].date()} -> {df.index[-1].date()}")
     return 0
 
 
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
-    bars = _load_bars(cfg)
+    with _connect(cfg) if cfg.data.source == "robinhood" else nullcontext() as rh:
+        bars = _load_bars(cfg, rh)
     prices = {s: float(df["close"].iloc[-1]) for s, df in bars.items()}
     broker = PaperBroker(
         cfg.broker.paper_state, cfg.broker.paper_starting_cash, prices
@@ -186,6 +221,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", "-c", help="TOML config file (default: built-in defaults)")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    sub.add_parser("login", help="authorize rhtrader with Robinhood (opens a browser)")
+    sub.add_parser("accounts", help="list Robinhood accounts and which one agents can trade")
+
     bt = sub.add_parser("backtest", help="simulate the strategy on historical data")
     bt.add_argument("--fast", type=int, help="override strategy.fast")
     bt.add_argument("--slow", type=int, help="override strategy.slow")
@@ -200,17 +238,27 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="show the paper trading account")
 
     fd = sub.add_parser("fetch-data", help="download daily bars from Robinhood to CSV")
-    fd.add_argument("--span", default="5year", help="day, week, month, 3month, year or 5year")
+    fd.add_argument("--years", type=float, default=10, help="how much history (default 10)")
 
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     handler = {
+        "login": cmd_login,
+        "accounts": cmd_accounts,
         "backtest": cmd_backtest,
         "trade": cmd_trade,
         "status": cmd_status,
         "fetch-data": cmd_fetch_data,
     }
-    return handler[args.command](cfg, args)
+    try:
+        return handler[args.command](cfg, args)
+    except Exception as e:
+        from .robinhood_mcp import LoginRequired
+
+        if isinstance(e, LoginRequired):
+            print(f"error: {e}", file=sys.stderr)
+            return 3
+        raise
 
 
 if __name__ == "__main__":

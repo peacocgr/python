@@ -45,3 +45,25 @@ def test_needs_enough_history():
     r = np.zeros(100)
     with pytest.raises(ValueError):
         correlation_report(_closes(r, r), "A", "B")
+
+
+def test_stress_states():
+    from rhtrader.correlation import stress_state
+
+    assert stress_state(0.05)[0] == "calm"
+    assert stress_state(0.10)[0] == "normal"
+    assert stress_state(0.15)[0] == "elevated"
+    assert stress_state(0.30) == ("stressed", 0.84)
+
+
+def test_market_stress_detects_a_volatility_jump():
+    from rhtrader.correlation import market_stress
+
+    rng = np.random.default_rng(2)
+    calm = rng.normal(0, 0.004, 80)      # ~6% annualized
+    shock = rng.normal(0, 0.03, 25)      # ~48% annualized
+    idx = pd.bdate_range("2024-01-01", periods=105)
+    before = market_stress(pd.Series(100 * np.cumprod(1 + calm), index=idx[:80]))
+    after = market_stress(pd.Series(100 * np.cumprod(1 + np.concatenate([calm, shock])), index=idx))
+    assert before["state"] == "calm"
+    assert after["state"] == "stressed"

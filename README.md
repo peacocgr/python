@@ -139,6 +139,13 @@ It flags when the 52-week correlation moves between bands (below 0.30
 diversifying, 0.30-0.70 moderate, above 0.70 moving together). It needs
 about 3 years of daily bars in `get_equity_historicals.json`.
 
+If SPY's bars are in the snapshot too, the report adds a market-stress line:
+SPY's 1-month volatility, classed as calm (<9%), normal (9-13%), elevated
+(13-18%) or stressed (>18%), the 2016-2026 quartiles. Over that period the
+SPMO/SCHD daily correlation was 0.21 in calm markets and 0.84 in stressed
+ones, so a move into elevated or stressed is the early sign the two are
+about to move together.
+
 ## Safety rails
 
 | Guard | Default | Behavior |

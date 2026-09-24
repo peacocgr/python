@@ -26,7 +26,7 @@ limit_buffer_bps = 20  # limit price = last price +/- 0.20%
 max_order_notional = 5000
 max_orders_per_run = 10
 max_data_age_days = 5
-max_price_gap_pct = 0.10   # skip a symbol if price is >10% from last close
+max_price_gap_pct = 0.10   # don't BUY if price is >10% from last close (sells still go)
 kill_switch_file = "KILL"  # `touch KILL` to stop all new orders
 
 [broker]

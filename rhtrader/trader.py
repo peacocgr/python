@@ -105,10 +105,12 @@ def run_cycle(
         if px is None or px <= 0:
             skipped[sym] = "no price available"
             signals.pop(sym)
-        elif abs(px / last_close - 1) > cfg.risk.max_price_gap_pct:
+        elif abs(px / last_close - 1) > cfg.risk.max_price_gap_pct and signals[sym] == 1:
+            # Only new entries are blocked: after an earnings gap the exit is
+            # exactly the order that must still go through.
             skipped[sym] = (
                 f"price {px:,.2f} is more than {cfg.risk.max_price_gap_pct:.0%} "
-                f"from last close {last_close:,.2f}; check the data"
+                f"from last close {last_close:,.2f}; not buying, check the data"
             )
             signals.pop(sym)
         else:

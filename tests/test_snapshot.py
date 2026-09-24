@@ -81,3 +81,14 @@ def test_price_far_from_last_close_is_skipped(cfg, tmp_path):
     plan, _ = plan_from_snapshot(cfg, tmp_path, assume_cash=1_000, now=now)
     assert plan["orders"] == []
     assert "from last close" in plan["symbols"]["AAA"]["skipped"]
+
+
+def test_price_gap_never_blocks_an_exit(cfg, tmp_path):
+    # Downtrend with a held position, then a >10% gap down (e.g. earnings).
+    closes = [10] * 5 + [11, 12, 13, 14, 15, 15, 15, 15, 12, 9, 6]
+    now = _write_snapshot(tmp_path, closes, quote_price=4.5,
+                          positions=[{"symbol": "AAA", "quantity": "5", "type": "long"}])
+    plan, _ = plan_from_snapshot(cfg, tmp_path, now=now)
+    sells = [o["place_equity_order_args"] for o in plan["orders"] if o["place_equity_order_args"]["symbol"] == "AAA"]
+    assert sells and sells[0]["side"] == "sell"
+    assert plan["symbols"]["AAA"]["skipped"] is None

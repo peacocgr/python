@@ -125,8 +125,9 @@ session can drive it through Claude's Robinhood connection:
    you fund it.
 
 The model never chooses trades; it only moves data and reports. As an extra
-guard against bad or mistyped data, any symbol whose price is more than
-`max_price_gap_pct` (10%) away from its last close is skipped.
+guard against bad or mistyped data, no new position is opened in a symbol
+whose price is more than `max_price_gap_pct` (10%) away from its last close.
+Sells are never blocked, since a big gap down is exactly when an exit matters.
 
 ## Safety rails
 
@@ -142,7 +143,7 @@ guard against bad or mistyped data, any symbol whose price is more than
 | Limit orders | 0.20% buffer | Whole-share orders are limit orders near the last price |
 | Stale data | 5 days | Symbols with old data are skipped |
 | Universe | config | Orders for symbols outside `symbols` are rejected |
-| Price sanity | 10% | Symbols priced more than 10% from their last close are skipped |
+| Price sanity | 10% | No new buy when the price is more than 10% from the last close; sells always go |
 
 ## Going live (suggested path)
 
